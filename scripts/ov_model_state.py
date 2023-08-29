@@ -1,20 +1,18 @@
-class ModelState:
-    def __init__(self):
-        self.recompile = 1
-        self.device = "CPU"
-        self.height = 512
-        self.width = 512
-        self.batch_size = 1
-        self.mode = 0
-        self.partition_id = 0
-        self.model_hash = ""
-        self.model_config = ""
-        self.vae_ckpt = ""
-        self.override_sampler = True
-        self.sampler_name = ""
-        self.enable_caching = True
-        self.is_xl_ckpt = False
-        self.refiner_ckpt = ""
-        self.refiner_steps = 0
-
-model_state = ModelState()
+model_state = dict (
+    recompile = 1,
+    device = "GPU",
+    height = 512,
+    width = 512,
+    batch_size = 1,
+    mode = 0,
+    partition_id = 0,
+    model_hash = "",
+    model_config = "",
+    vae_ckpt = "",
+    override_sampler = True,
+    sampler_name = "",
+    enable_caching = True,
+    is_xl_ckpt = False,
+    refiner_ckpt = "",
+    refiner_steps = 0
+)
