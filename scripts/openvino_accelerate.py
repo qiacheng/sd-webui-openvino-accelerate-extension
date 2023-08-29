@@ -36,7 +36,6 @@ import modules.scripts as scripts
 
 from scripts.ov_model_state import model_state
 
-
 def openvino_clear_caches():
     global partitioned_modules
     global compiled_cache
@@ -107,6 +106,7 @@ def get_diffusers_sd_model(model_config, vae_ckpt, sampler_name, enable_caching,
         torch._dynamo.reset()
         ## use lock to prevent data race
         with lock:
+            devices.torch_gc()
             openvino_clear_caches()
         curr_dir_path = os.getcwd()
         checkpoint_name = shared.opts.sd_model_checkpoint.split(" ")[0]
@@ -119,10 +119,10 @@ def get_diffusers_sd_model(model_config, vae_ckpt, sampler_name, enable_caching,
         if(is_xl_ckpt):
             if model_config != "None":
                 local_config_file = os.path.join(curr_dir_path, 'configs', model_config)
-                sd_model = StableDiffusionXLPipeline.from_single_file(checkpoint_path, original_onfig_file=local_config_file, use_safetensors=True, local_files_only=True)
+                sd_model = StableDiffusionXLPipeline.from_single_file(checkpoint_path, original_config_file=local_config_file, use_safetensors=True, local_files_only=True)
             else:
                 if (mode == 0):
-                    sd_model = StableDiffusionXLPipeline.from_single_file(checkpoint_path, use_safetensors=True, dtype=torch.float32)
+                    sd_model = StableDiffusionXLPipeline.from_single_file(checkpoint_path, original_config_file=checkpoint_config, use_safetensors=True, dtype=torch.float32)
                 elif (mode == 1):
                     sd_model = StableDiffusionXLImg2ImgPipeline.from_single_file(**sd_model.components)
                 elif (mode == 2):
@@ -133,7 +133,7 @@ def get_diffusers_sd_model(model_config, vae_ckpt, sampler_name, enable_caching,
                 sd_model = StableDiffusionPipeline.from_single_file(checkpoint_path, original_config_file=local_config_file, use_safetensors=True, local_files_only=True)
             else:
                 if (mode == 0):
-                    sd_model = StableDiffusionPipeline.from_single_file(checkpoint_path, use_safetensors=True, dtype=torch.float32)
+                    sd_model = StableDiffusionPipeline.from_single_file(checkpoint_path, original_config_file=checkpoint_config, use_safetensors=True, dtype=torch.float32)
                 elif (mode == 1):
                     sd_model = StableDiffusionImg2ImgPipeline.from_single_file(**sd_model.components)
                 elif (mode == 2):
@@ -747,6 +747,13 @@ class Script(scripts.Script):
                 return gr.update(value="Device changed to " + choice + ". Model will be re-compiled", visible=True)
         openvino_device.change(device_change, openvino_device, warmup_status)
 
+        def model_config_change(choice):
+            if (model_state["model_config"] == choice):
+                return gr.update(value="model_config selected is " + choice, visible=True)
+            else:
+                model_state["model_config"] = choice
+                return gr.update(value="model_config changed to " + choice + ". Model will be re-compiled", visible=True)
+        model_config.change(model_config_change, vae_ckpt, vae_status)
 
 
         def vae_change(choice):

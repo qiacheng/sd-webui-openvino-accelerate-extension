@@ -1,8 +1,9 @@
 import os
 import torch
-
-from openvino.frontend.pytorch.torchdynamo.execute import execute
+from hashlib import sha256
 from openvino.frontend.pytorch.torchdynamo.partition import Partitioner
+from openvino.frontend.pytorch.torchdynamo.execute import execute, execute_cached
+from openvino.frontend.pytorch.torchdynamo.compile import cached_model_name, cache_root_path, get_device, openvino_compile_cached_model
 from openvino.runtime import Core, Type, PartialShape
 from torch._dynamo.backends.common import fake_tensor_unsupported
 from torch._dynamo.backends.registry import register_backend
@@ -39,18 +40,62 @@ def get_cached_file_name(*args, model_hash_str, device, cache_root):
 @register_backend
 @fake_tensor_unsupported
 def openvino_fx(subgraph, example_inputs):
+    try:
+        executor_parameters = None
+        inputs_reversed = False
+        if os.getenv("OPENVINO_TORCH_MODEL_CACHING") is not None:
+            # Create a hash to be used for caching
+            model_hash_str = sha256(subgraph.code.encode('utf-8')).hexdigest() + "_" + model_state["model_hash"]
+            executor_parameters = {"model_hash_str": model_hash_str}
+            # Check if the model was fully supported and already cached
+            example_inputs.reverse()
+            inputs_reversed = True
+            maybe_fs_cached_name = cached_model_name(model_hash_str + "_fs", get_device(), example_inputs, cache_root_path())
+            print(maybe_fs_cached_name)
+            if os.path.isfile(maybe_fs_cached_name + ".xml") and os.path.isfile(maybe_fs_cached_name + ".bin"):
+                # Model is fully supported and already cached. Run the cached OV model directly.
+                compiled_model = openvino_compile_cached_model(maybe_fs_cached_name, *example_inputs)
+                def _call(*args):
+                    res = execute_cached(compiled_model, *args)
+                    return res
+                return _call
+        print("First Time Model Compilation-----")
+        if inputs_reversed:
+            example_inputs.reverse()
+        model = make_fx(subgraph)(*example_inputs)
+        with torch.no_grad():
+            model.eval()
+        partitioner = Partitioner()
+        compiled_model = partitioner.make_partitions(model)
+
+        if executor_parameters is not None and 'model_hash_str' in executor_parameters:
+            # Check if the model is fully supported.
+            fully_supported = partitioner.check_fully_supported(compiled_model)
+            if fully_supported:
+                executor_parameters["model_hash_str"] += "_fs"
+
+        def _call(*args):
+            res = execute(compiled_model, *args, executor="openvino",
+                          executor_parameters=executor_parameters)
+            return res
+        return _call
+    except Exception as e:
+        print(f"Failed in OpenVINO execution: {e}")
+        return compile_fx(subgraph, example_inputs)
+
+
+
+def openvino_fx_bak(subgraph, example_inputs):
     print(model_state)
     try:
         executor_parameters = None
         core = Core()
         if os.getenv("OPENVINO_TORCH_MODEL_CACHING") != "0":
-            model_hash_str = model_state["model_hash"]
-            #model_hash_str = sha256(subgraph.code.encode('utf-8')).hexdigest()
-            model_hash_str_file = model_hash_str + str(model_state["partition_id"])
-            model_state["partition_id"] = model_state["partition_id"] + 1
-            executor_parameters = {"model_hash_str": model_hash_str,
-                                "partition_id": model_state["partition_id"]
-                                }
+            model_hash_str = sha256(subgraph.code.encode('utf-8')).hexdigest() + "_" + model_state["model_hash"]
+            #model_hash_str_file = model_hash_str + str(model_state["partition_id"])
+            model_hash_str_file = model_hash_str + "_fs"
+            #model_state["partition_id"] = model_state["partition_id"] + 1
+            executor_parameters = {"model_hash_str": model_hash_str}
 
         example_inputs.reverse()
         cache_root = "./cache/"
@@ -65,6 +110,8 @@ def openvino_fx(subgraph, example_inputs):
             assert device in core.available_devices, "Specified device " + device + " is not in the list of OpenVINO Available Devices"
 
         file_name = get_cached_file_name(*example_inputs, model_hash_str=model_hash_str_file, device=device, cache_root=cache_root)
+
+        print(file_name)
 
         if file_name is not None and os.path.isfile(file_name + ".xml") and os.path.isfile(file_name + ".bin"):
             print("reading model from xml")
@@ -98,14 +145,18 @@ def openvino_fx(subgraph, example_inputs):
                 return result
             return _call
         else:
-            print("im in else!")
+            print("First Time Model Compilation------------")
             example_inputs.reverse()
             model = make_fx(subgraph)(*example_inputs)
             with torch.no_grad():
                 model.eval()
             partitioner = Partitioner()
             compiled_model = partitioner.make_partitions(model)
-
+            if executor_parameters is not None and 'model_hash_str' in executor_parameters:
+                # Check if the model is fully supported.
+                fully_supported = partitioner.check_fully_supported(compiled_model)
+            if fully_supported:
+                executor_parameters["model_hash_str"] += "_fs"
             def _call(*args):
                 res = execute(compiled_model, *args, executor="openvino",
                               executor_parameters=executor_parameters)
